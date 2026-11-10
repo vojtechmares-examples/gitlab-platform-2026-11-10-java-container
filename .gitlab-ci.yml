@@ -1,0 +1,154 @@
+# Spring Boot + PostgreSQL, deployed to a Linux server as a container that a systemd unit runs with "docker run".
+#   test       unit tests, and the application started against a PostgreSQL job "service"
+#   package    app.jar
+#   image      docker build (Rocky Linux base) and push to the GitLab Container Registry
+#   staging    pull the image on the server with the deploy token, restart the unit      (automatic)
+#   production the same                                                                   (manual)
+# Database migrations are NOT a pipeline step: Flyway runs when the application starts.
+
+include:
+  - project: examples/ci-templates
+    ref: main
+    file: /rocky.yml
+
+stages: [test, package, image, staging, production]
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+variables:
+  APP: java-container
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  MAVEN_CLI_OPTS: "-B -ntp"
+
+.maven:
+  image: rockylinux/rockylinux:10
+  before_script:
+    - !reference [.rocky-dnf, before_script]
+    - dnf -y -q install maven-openjdk21 java-21-openjdk-devel
+    - mvn --version | head -3
+  cache:
+    key: maven-$APP
+    paths: [.m2/repository]
+
+test:
+  extends: .maven
+  stage: test
+  # A PostgreSQL container next to the job, reachable as "postgres", pulled through the group's Dependency Proxy.
+  services:
+    - name: $CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX/postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_DB: app_test
+    POSTGRES_USER: app
+    POSTGRES_PASSWORD: app
+    SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/app_test
+    SPRING_DATASOURCE_USERNAME: app
+    SPRING_DATASOURCE_PASSWORD: app
+  script:
+    - mvn $MAVEN_CLI_OPTS verify
+  artifacts:
+    when: always
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+
+package:
+  extends: .maven
+  stage: package
+  script:
+    - mvn $MAVEN_CLI_OPTS -DskipTests -Dbuild.id=$CI_PIPELINE_ID package
+  artifacts:
+    paths: [target/app.jar]
+    expire_in: 1 week
+
+image:
+  stage: image
+  needs: [package]
+  image: $CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX/docker:29
+  services:
+    - name: $CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX/docker:29-dind
+      alias: docker
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+    # Docker 29 adds provenance attestation manifests that the GitLab 19.5 registry (metadata database) rejects.
+    BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --pull --build-arg BUILD_ID=$CI_PIPELINE_ID -t "$CI_REGISTRY_IMAGE:$CI_PIPELINE_ID" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_PIPELINE_ID"
+
+.deploy:
+  image: rockylinux/rockylinux:10
+  needs: [image]
+  resource_group: $APP-$DEPLOY_ENV
+  before_script:
+    - !reference [.rocky-dnf, before_script]
+    - dnf -y -q install openssh-clients curl
+    - !reference [.ssh-setup, before_script]
+  script:
+    - deploy/release.sh $DEPLOY_ENV
+
+deploy:staging:
+  extends: .deploy
+  stage: staging
+  variables:
+    DEPLOY_ENV: staging
+  environment:
+    name: staging
+    url: https://$APP-staging.$EXAMPLES_DOMAIN
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy:production:
+  extends: .deploy
+  stage: production
+  needs: [image, deploy:staging]
+  variables:
+    DEPLOY_ENV: production
+  environment:
+    name: production
+    url: https://$APP-production.$EXAMPLES_DOMAIN
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+.rollback:
+  image: rockylinux/rockylinux:10
+  needs: []
+  before_script:
+    - !reference [.rocky-dnf, before_script]
+    - dnf -y -q install openssh-clients curl
+    - !reference [.ssh-setup, before_script]
+  script:
+    - deploy/rollback.sh $DEPLOY_ENV
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+
+rollback:staging:
+  extends: .rollback
+  stage: staging
+  variables:
+    DEPLOY_ENV: staging
+  environment:
+    name: staging
+    action: access
+
+rollback:production:
+  extends: .rollback
+  stage: production
+  variables:
+    DEPLOY_ENV: production
+  environment:
+    name: production
+    action: access
