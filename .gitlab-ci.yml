@@ -1,7 +1,7 @@
 # Spring Boot + PostgreSQL, deployed to a Linux server as a container that a systemd unit runs with "docker run".
 #   test       unit tests, and the application started against a PostgreSQL job "service"
 #   package    app.jar
-#   image      docker build (Rocky Linux base) and push to the GitLab Container Registry
+#   image      (job build-image) docker build (Rocky Linux base) and push to the GitLab Container Registry
 #   staging    pull the image on the server with the deploy token, restart the unit      (automatic)
 #   production the same                                                                   (manual)
 # Database migrations are NOT a pipeline step: Flyway runs when the application starts.
@@ -64,7 +64,7 @@ package:
     paths: [target/app.jar]
     expire_in: 1 week
 
-image:
+build-image:
   stage: image
   needs: [package]
   image: $CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX/docker:29
@@ -88,7 +88,7 @@ image:
 
 .deploy:
   image: rockylinux/rockylinux:10
-  needs: [image]
+  needs: [build-image]
   resource_group: $APP-$DEPLOY_ENV
   before_script:
     - !reference [.rocky-dnf, before_script]
@@ -111,7 +111,7 @@ deploy:staging:
 deploy:production:
   extends: .deploy
   stage: production
-  needs: [image, deploy:staging]
+  needs: [build-image, deploy:staging]
   variables:
     DEPLOY_ENV: production
   environment:
