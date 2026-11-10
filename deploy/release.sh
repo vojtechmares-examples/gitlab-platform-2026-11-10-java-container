@@ -4,7 +4,7 @@
 #   deploy/release.sh staging|production
 #
 # On the server (created by the Ansible project):
-#   /srv/java-container/<env>/image.env        IMAGE=<registry>/<image>:<pipeline id>   read by the unit
+#   /var/lib/examples/java-container/<env>/image.env        IMAGE=<registry>/<image>:<pipeline id>   read by the unit
 #   java-container-<env>.service               ExecStart=docker run ... ${IMAGE}
 # The registry is read with the project's deploy token (named gitlab-deploy-token: GitLab exposes it to the
 # job as CI_DEPLOY_USER / CI_DEPLOY_PASSWORD).
@@ -16,7 +16,7 @@ BUILD_ID="${CI_PIPELINE_ID:?CI_PIPELINE_ID is not set (run this from a pipeline)
 : "${CI_DEPLOY_USER:?the project has no deploy token named gitlab-deploy-token}"
 : "${CI_DEPLOY_PASSWORD:?the project has no deploy token named gitlab-deploy-token}"
 
-BASE="/srv/${APP}/${ENVIRONMENT}"
+BASE="/var/lib/examples/${APP}/${ENVIRONMENT}"
 UNIT="${APP}-${ENVIRONMENT}"
 IMAGE="${CI_REGISTRY_IMAGE}:${BUILD_ID}"
 URL="https://${UNIT}.${EXAMPLES_DOMAIN:?EXAMPLES_DOMAIN is not set}"

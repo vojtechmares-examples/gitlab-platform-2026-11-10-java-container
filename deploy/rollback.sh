@@ -5,7 +5,7 @@ set -euo pipefail
 
 ENVIRONMENT="${1:?usage: rollback.sh staging|production}"
 APP="${APP:-java-container}"
-BASE="/srv/${APP}/${ENVIRONMENT}"
+BASE="/var/lib/examples/${APP}/${ENVIRONMENT}"
 UNIT="${APP}-${ENVIRONMENT}"
 URL="https://${UNIT}.${EXAMPLES_DOMAIN:?EXAMPLES_DOMAIN is not set}"
 
